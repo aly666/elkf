@@ -1,0 +1,103 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-config
+  namespace: logging
+data:
+  logstash.yml: |
+    http.host: "0.0.0.0"
+    xpack.monitoring.enabled: false
+
+  pipelines.yml: |
+    - pipeline.id: main
+      path.config: "/usr/share/logstash/pipeline"
+
+  logstash.conf: |
+    input {
+      beats {
+        port => 5044
+      }
+    }
+
+    filter {
+      if [kubernetes] {
+        mutate {
+          add_field => { "namespace" => "%{[kubernetes][namespace]}" }
+          add_field => { "pod" => "%{[kubernetes][pod][name]}" }
+        }
+      }
+    }
+
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch.logging.svc.cluster.local:9200"]
+        index => "filebeat-%{+YYYY.MM.dd}"
+      }
+      stdout { codec => rubydebug }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logstash
+  namespace: logging
+  labels:
+    app: logstash
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logstash
+  template:
+    metadata:
+      labels:
+        app: logstash
+    spec:
+      containers:
+        - name: logstash
+          image: docker.elastic.co/logstash/logstash:7.17.28
+          ports:
+            - containerPort: 5044
+              name: beats
+          volumeMounts:
+            - name: config
+              mountPath: /usr/share/logstash/config/logstash.yml
+              subPath: logstash.yml
+            - name: pipeline
+              mountPath: /usr/share/logstash/config/pipelines.yml
+              subPath: pipelines.yml
+            - name: pipeline
+              mountPath: /usr/share/logstash/pipeline/logstash.conf
+              subPath: logstash.conf
+      volumes:
+        - name: config
+          configMap:
+            name: logstash-config
+            items:
+              - key: logstash.yml
+                path: logstash.yml
+        - name: pipeline
+          configMap:
+            name: logstash-config
+            items:
+              - key: pipelines.yml
+                path: pipelines.yml
+              - key: logstash.conf
+                path: logstash.conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logstash
+  namespace: logging
+  labels:
+    app: logstash
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5044
+      targetPort: 5044
+      name: beats
+  selector:
+    app: logstash
